@@ -1,0 +1,25 @@
+<div style="max-width:1440px;margin:0 auto;padding:18px 22px 40px">
+  <div class="row" style="margin-bottom:6px">
+    <h1 style="font-size:21px;color:var(--brand)">
+      离线原料配比试算台
+      <span class="badge warn" style="font-size:11px;vertical-align:middle">
+        虚构工艺边界 · 仅供工艺研发 · 不向真实设备下指令</span>
+    </h1>
+  </div>
+  <p class="muted small" style="margin-top:0">
+    Angular 展示氧化物来源与配比 · FastAPI 调 SciPy(HiGHS) 优化 ·
+    PostgreSQL 存检测成分 / 干湿基换算 / 成本 ·
+    质量守恒 → 硅率 SM / 铝率 IM / 石灰饱和 KH ·
+    分母为零或缺测明确报错，绝不默认零含量。
+  </p>
+
+  <div class="tabs">
+    <button [class.active]="tab === 'materials'" (click)="tab = 'materials'">① 原料与化验</button>
+    <button [class.active]="tab === 'blend'" (click)="tab = 'blend'">② 配比试算与方案对比</button>
+    <button [class.active]="tab === 'history'" (click)="tab = 'history'">④ 历史追溯</button>
+  </div>
+
+  <app-materials *ngIf="tab === 'materials'"></app-materials>
+  <app-blend *ngIf="tab === 'blend'"></app-blend>
+  <app-history *ngIf="tab === 'history'"></app-history>
+</div>

@@ -1,0 +1,100 @@
+<div class="panel">
+  <div class="row">
+    <h2>④ 历史试算追溯（原始化验版 + 换算过程）</h2>
+    <span class="spacer"></span>
+    <button class="ghost" (click)="reload()">刷新</button>
+  </div>
+
+  <div class="grid2">
+    <div>
+      <table>
+        <thead><tr><th>批次号</th><th>场景</th><th>状态</th><th>模式</th><th>时间</th><th></th></tr></thead>
+        <tbody>
+          <tr *ngFor="let r of runs"
+              [style.background]="detail?.id === r.id ? 'var(--brand-soft)' : ''">
+            <td class="mono small">{{ r.run_code }}</td>
+            <td>{{ r.scenario_name }}</td>
+            <td><span [class]="'badge ' + (r.status === 'feasible' ? 'ok' : 'err')">
+              {{ r.status }}</span></td>
+            <td class="small">{{ r.modes.join('/') }}</td>
+            <td class="small muted">{{ r.created_at }}</td>
+            <td><button class="ghost" (click)="open(r.id)">回看</button></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="small muted" *ngIf="!runs.length">尚无试算记录。</p>
+    </div>
+
+    <div *ngIf="detail">
+      <div class="panel" style="margin-bottom:10px">
+        <h3>{{ detail.scenario_name }}
+          <span class="mono small muted">{{ detail.run_code }}</span></h3>
+        <div class="small muted">
+          批量 {{ detail.batch_t_dry }} t 干生料 · {{ detail.created_at }} ·
+          目标 SM[{{ detail.target.SM.min }},{{ detail.target.SM.max }}]
+          IM[{{ detail.target.IM.min }},{{ detail.target.IM.max }}]
+          KH[{{ detail.target.KH.min }},{{ detail.target.KH.max }}]
+        </div>
+      </div>
+
+      <div class="panel" *ngFor="let s of detail.solutions" style="margin-bottom:10px">
+        <div class="row">
+          <strong>{{ s.mode }}</strong>
+          <span [class]="'badge ' + (s.success ? 'ok' : 'err')">
+            {{ s.success ? '可行' : '失败' }}</span>
+          <span class="spacer"></span>
+          <span class="small mono" *ngIf="s.success">
+            {{ s.total_cost }} 元 · SM {{ ind(s,'SM') }} IM {{ ind(s,'IM') }}
+            KH {{ ind(s,'KH') }}</span>
+        </div>
+
+        <div class="callout err" *ngIf="!s.success && s.diagnostic">
+          {{ s.diagnostic.message }}
+          <div class="small" *ngFor="let c of s.diagnostic.conflicts">
+            · {{ c.constraint }}：限值 {{ c.limit ?? '—' }}，达到 {{ c.achieved ?? '—' }}，缺口 {{ c.normalized_gap }}
+          </div>
+        </div>
+
+        <table *ngIf="s.items?.length" style="margin-top:8px">
+          <thead>
+            <tr><th>原料</th><th>原始化验单</th><th>基准</th>
+              <th class="num">干基%</th><th class="num">干t/湿t/水t</th>
+              <th>换算留痕</th></tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let it of s.items">
+              <td class="small">{{ it.material_code }} {{ it.material_name }}</td>
+              <td class="small mono">{{ it.assay_version }}<br/>{{ it.lab_report_no }}</td>
+              <td><span class="badge dry" *ngIf="it.raw_assay.basis === 'dry'">dry</span>
+                  <span class="badge wet" *ngIf="it.raw_assay.basis === 'wet'">wet</span></td>
+              <td class="num">{{ it.share_pct_dry }}</td>
+              <td class="num small">{{ it.mass_t_dry }} / {{ it.mass_t_wet }} / {{ it.water_t }}</td>
+              <td>
+                <details class="trace">
+                  <summary>原始化验值 → 干基 → 质量成本</summary>
+                  <div class="small">
+                    <div style="margin:4px 0">原始报送（{{ it.raw_assay.basis }}，{{ it.lab_report_no }}）：
+                      <span class="mono">{{ it.raw_assay.composition | json }}</span>
+                    </div>
+                    <table>
+                      <tr *ngFor="let st of it.conversion_trace.steps">
+                        <td>{{ st.component }}</td>
+                        <td class="num">{{ st.value_in }} {{ st.basis_in }}</td>
+                        <td class="mono" style="font-size:11px">{{ st.formula }}</td>
+                        <td class="num">{{ st.value_out }} {{ st.basis_out }}</td>
+                      </tr>
+                    </table>
+                    <div class="mono" style="margin-top:4px" *ngIf="it.conversion_trace.mass_balance as mb">
+                      {{ mb.cost }}
+                    </div>
+                  </div>
+                </details>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="muted small" *ngIf="!detail">点击“回看”查看完整追溯。</div>
+  </div>
+</div>

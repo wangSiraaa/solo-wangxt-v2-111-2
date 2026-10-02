@@ -1,0 +1,70 @@
+<div class="panel">
+  <div class="row">
+    <h2>① 原料与化验版本（PostgreSQL）</h2>
+    <span class="spacer"></span>
+    <label class="small"><input type="checkbox" [(ngModel)]="activeOnly"
+           (change)="load()" /> 仅常规候选（隐藏演示物料）</label>
+    <button class="ghost" (click)="load()">刷新</button>
+  </div>
+  <p class="muted small">
+    所有数据均为<strong>虚构工艺边界</strong>下的研发演示数据，不对真实生产设备下指令。
+    红色“缺测”单元格表示该氧化物<strong>未分析</strong>——配比时系统会拒绝并报错，绝不按零含量代替。
+    湿基化验单（<span class="badge wet">wet</span>）自动按 <span class="mono">干基值 = 湿基值 /（1 − 含水率）</span> 换算。
+  </p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>代码</th><th>名称/类别</th><th>含水率%</th><th class="num">成本<br/>元/t湿</th>
+        <th class="num">可用量<br/>t湿</th><th class="num">最低<br/>掺量%</th>
+        <th>化验版</th><th>化验单号</th><th>基准</th>
+        <th class="num" *ngFor="let o of ox">{{ o }}</th>
+        <th class="num">干基<br/>合计</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      <ng-container *ngFor="let m of materials">
+        <tr [style.background]="!m.is_active ? '#faf7fc' : ''">
+          <td class="mono">{{ m.code }}</td>
+          <td>{{ m.name }}<br/><span class="muted small">{{ m.category }}</span></td>
+          <td class="num">{{ m.moisture_pct }}</td>
+          <td class="num">{{ m.cost_per_t_wet }}</td>
+          <td class="num">{{ m.availability_t_wet ?? '不限' }}</td>
+          <td class="num">{{ m.min_share_pct }}</td>
+          <td>
+            <select *ngIf="m.assay_versions.length > 1"
+                    [(ngModel)]="versionPick[m.id]">
+              <option *ngFor="let a of m.assay_versions" [value]="a.id">{{ a.version }}</option>
+            </select>
+            <span *ngIf="m.assay_versions.length <= 1">{{ chosen(m)?.version }}</span>
+          </td>
+          <td class="small mono">{{ chosen(m)?.lab_report_no }}</td>
+          <td>
+            <span class="badge dry" *ngIf="chosen(m)?.basis === 'dry'">dry 干基</span>
+            <span class="badge wet" *ngIf="chosen(m)?.basis === 'wet'">wet 湿基</span>
+            <span class="badge demo" *ngIf="!m.is_active">演示</span>
+          </td>
+          <td class="num" *ngFor="let o of ox">
+            <span [class.miss-cell]="!isMeasured(m, o)">
+              {{ isMeasured(m, o) ? dryVal(m, o) : '缺测' }}
+            </span>
+          </td>
+          <td class="num">{{ totalDry(m).toFixed(2) }}</td>
+          <td><button class="ghost" (click)="expanded[m.id] = !expanded[m.id]">
+            {{ expanded[m.id] ? '收起' : '化验单' }}</button></td>
+        </tr>
+        <tr *ngIf="expanded[m.id]">
+          <td [attr.colspan]="ox.length + 10" style="background:#fbfcfd">
+            <div class="small muted">{{ m.note }}</div>
+            <div class="small" style="margin-top:6px" *ngIf="chosen(m)?.basis === 'wet'">
+              湿→干换算系数 1/(1−{{ m.moisture_pct }}/100) =
+              <strong class="mono">{{ (1/(1 - m.moisture_pct/100)).toFixed(5) }}</strong>，
+              各组分与 LOI 均除以 (1−含水率)；自由水不并入 LOI。
+            </div>
+          </td>
+        </tr>
+      </ng-container>
+    </tbody>
+  </table>
+</div>

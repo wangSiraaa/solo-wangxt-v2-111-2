@@ -1,0 +1,170 @@
+<!-- 演示预设 -->
+<div class="panel">
+  <h2>② 离线配比试算（FastAPI + SciPy HiGHS LP）</h2>
+  <p class="muted small">
+    先按干基质量守恒合成生料，再计算硅率 SM / 铝率 IM / 石灰饱和 KH；
+    约束含最低掺量、湿基可用量、有害组分干基上限。求解失败时用最小违约模型列出冲突项。
+  </p>
+  <div class="row">
+    <strong class="small">快速场景：</strong>
+    <button class="ghost" *ngFor="let p of presets" (click)="applyPreset(p)">{{ p.label }}</button>
+  </div>
+  <div class="callout info small" style="margin-top:8px">
+    当前场景：<strong>{{ scenario }}</strong>
+  </div>
+</div>
+
+<div class="grid2">
+  <!-- 候选原料 -->
+  <div class="panel">
+    <h3>候选原料 / 化验版本 / 掺量边界</h3>
+    <table>
+      <thead>
+        <tr><th>选用</th><th>原料</th><th>含水率%</th>
+          <th class="num">成本元/t湿</th><th class="num">可用量t湿</th>
+          <th class="num">最低%</th><th>化验版</th></tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let m of materials">
+          <td><input type="checkbox" [(ngModel)]="cand[m.id].selected" /></td>
+          <td><span class="mono">{{ m.code }}</span> {{ m.name }}
+            <span class="badge demo" *ngIf="!m.is_active">演示</span></td>
+          <td class="num">{{ m.moisture_pct }}</td>
+          <td class="num">{{ m.cost_per_t_wet }}</td>
+          <td class="num">{{ m.availability_t_wet ?? '不限' }}</td>
+          <td class="num">{{ m.min_share_pct }}</td>
+          <td>
+            <select [(ngModel)]="cand[m.id].assay_version_id">
+              <option *ngFor="let a of m.assay_versions" [value]="a.id">
+                {{ a.version }}（{{ a.basis }}）
+              </option>
+            </select>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="small muted" style="margin-top:6px">
+      注意：最低掺量为原料档案中的虚构边界；可用量按收到基（湿基）登记，求解时换算为干基份额上限。
+    </p>
+  </div>
+
+  <!-- 指标/约束/模式 -->
+  <div class="panel">
+    <h3>率值目标（虚构工艺窗口）· 有害上限 · 模式</h3>
+    <table>
+      <thead><tr><th>指标</th><th class="num">下限</th><th class="num">上限</th><th>公式</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>硅率 SM</td>
+          <td class="num"><input type="number" step="0.05" [(ngModel)]="targets.SM.min" /></td>
+          <td class="num"><input type="number" step="0.05" [(ngModel)]="targets.SM.max" /></td>
+          <td class="small muted">SiO₂/(Al₂O₃+Fe₂O₃)</td>
+        </tr>
+        <tr>
+          <td>铝率 IM</td>
+          <td class="num"><input type="number" step="0.05" [(ngModel)]="targets.IM.min" /></td>
+          <td class="num"><input type="number" step="0.05" [(ngModel)]="targets.IM.max" /></td>
+          <td class="small muted">Al₂O₃/Fe₂O₃</td>
+        </tr>
+        <tr>
+          <td>石灰饱和 KH</td>
+          <td class="num"><input type="number" step="0.01" [(ngModel)]="targets.KH.min" /></td>
+          <td class="num"><input type="number" step="0.01" [(ngModel)]="targets.KH.max" /></td>
+          <td class="small muted">(CaO−1.65A−0.35F)/(2.8SiO₂)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="row" style="margin-top:10px">
+      <label class="small">Cl 上限 %（干基）
+        <input type="number" step="0.001" [(ngModel)]="hazardCl" /></label>
+      <label class="small">碱当量 Na₂O+0.658K₂O 上限 %
+        <input type="number" step="0.05" [(ngModel)]="hazardAlkali" /></label>
+      <label class="small">批量（t 干生料）
+        <input type="number" step="100" [(ngModel)]="batch" /></label>
+    </div>
+
+    <h3 style="margin-top:12px">求解模式（多可行解对比）</h3>
+    <div class="row">
+      <label class="small"><input type="checkbox" [(ngModel)]="modes.min_cost" />
+        成本最优（元/t 干生料）</label>
+      <label class="small"><input type="checkbox" [(ngModel)]="modes.max_cheap" />
+        廉价原料用量最大（两阶段 LP），廉价料：
+        <select [(ngModel)]="cheapId">
+          <option *ngFor="let m of materials" [value]="m.id">
+            {{ m.code }} {{ m.name }}（{{ m.cost_per_t_wet }} 元/t湿）
+          </option>
+        </select>
+      </label>
+      <label class="small"><input type="checkbox" [(ngModel)]="modes.balanced" />
+        率值居中平衡方案（区间中点偏差最小）</label>
+    </div>
+
+    <label class="small" style="display:block;margin-top:10px">试算名称
+      <input class="wide" type="text" [(ngModel)]="scenario" /></label>
+    <div class="row" style="margin-top:12px">
+      <button (click)="solve()" [disabled]="loading">
+        {{ loading ? '求解中…' : '开始配比试算' }}
+      </button>
+      <span class="small muted">结果将写入 PostgreSQL 并可在「④ 追溯」中回看。</span>
+    </div>
+    <div class="callout err" *ngIf="apiError">
+      <strong>{{ apiError.error_code || 'ERROR' }}</strong>
+      <div>{{ apiError.message }}</div>
+      <table *ngIf="apiError.details?.missing as missing" style="margin-top:6px">
+        <thead><tr><th>原料</th><th>化验版</th><th>单号</th><th>缺测组分</th></tr></thead>
+        <tbody>
+          <tr *ngFor="let x of missing">
+            <td>{{ x.material_code }} {{ x.material_name }}</td>
+            <td class="mono">{{ x.assay_version }}</td>
+            <td class="mono">{{ x.lab_report_no }}</td>
+            <td><span class="badge err">{{ x.component }}</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- 方案结果 -->
+<ng-container *ngIf="result">
+  <div class="callout info">
+    试算批次 <span class="mono">{{ result.run_code }}</span>
+    状态：<span [class]="'badge ' + (result.status === 'feasible' ? 'ok' : 'err')">
+    {{ result.status === 'feasible' ? '存在可行解' : '全部无解' }}</span>
+    （共 {{ result.solutions.length }} 个方案）
+  </div>
+  <app-solution-card *ngFor="let s of result.solutions; let i = index"
+                     [sol]="s" [targets]="targets" [index]="i"></app-solution-card>
+</ng-container>
+
+<!-- 手工配比错误演示 -->
+<div class="panel">
+  <h3>③ 手工配比：分母为零 / 缺测必须显式报错</h3>
+  <div class="row">
+    <button class="ghost" (click)="setEvalDemo('zero')">装入：100% 零铁石英 QZ00（Fe₂O₃ 实测 0）</button>
+    <button class="ghost" (click)="setEvalDemo('missing')">装入：20% 缺测矿样 SP01 + 80% 石灰石</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <ng-container *ngFor="let id of evalIds; let i = index">
+      <label class="small">
+        <select [(ngModel)]="evalIds[i]" (change)="onEvalIdsChange()">
+          <option *ngFor="let m of materials" [value]="m.id">{{ m.code }} {{ m.name }}</option>
+        </select>
+      </label>
+      <label class="small">干基% <input type="number" [(ngModel)]="evalShares[i]" /></label>
+    </ng-container>
+    <button (click)="evaluate()" [disabled]="evalBusy">质量守恒合成 + 算率值</button>
+  </div>
+
+  <div class="callout err" *ngIf="evalError" style="margin-top:10px">
+    <strong>{{ evalError.error_code }}</strong> — {{ evalError.message }}
+    <pre class="small" style="margin:6px 0 0">{{ evalError.details | json }}</pre>
+  </div>
+  <div *ngIf="evalResult" class="callout ok" style="margin-top:10px;background:var(--ok-bg)">
+    <strong class="small">合成成功</strong>
+    <div class="small">SM {{ evalResult.indicators.SM }}，
+      IM {{ evalResult.indicators.IM }}，KH {{ evalResult.indicators.KH }}；
+      湿料含水率 {{ evalResult.water_pct_in_wet_mix }}%</div>
+  </div>
+</div>

@@ -1,0 +1,147 @@
+<div class="panel" [style.border-left]="'4px solid #155e63'">
+  <div class="row">
+    <h3>方案 {{ index + 1 }}｜{{ sol.mode_label }}
+      <span class="badge ok" *ngIf="sol.success">可行</span>
+      <span class="badge err" *ngIf="!sol.success">求解失败</span>
+    </h3>
+    <span class="spacer"></span>
+    <span class="muted small mono" *ngIf="sol.success">
+      批次成本 {{ sol.total_cost | number:'1.0-2' }} 元 /
+      {{ sol.cost_per_t_dry | number:'1.0-2' }} 元·t⁻¹干生料</span>
+  </div>
+
+  <!-- 失败：冲突项 -->
+  <div *ngIf="!sol.success && sol.diagnostic" class="callout err">
+    <strong>{{ sol.diagnostic.reason }}</strong>
+    <div>{{ sol.diagnostic.message }}</div>
+    <table style="margin-top:8px">
+      <thead><tr><th>冲突约束</th><th class="num">限值</th><th class="num">最小违约解达到值</th><th class="num">违约缺口</th></tr></thead>
+      <tbody>
+        <tr *ngFor="let c of sol.diagnostic.conflicts">
+          <td>{{ c.constraint }}</td>
+          <td class="num">{{ c.limit ?? '—' }}</td>
+          <td class="num">{{ c.achieved ?? '—' }}</td>
+          <td class="num">{{ c.normalized_gap }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <ng-container *ngIf="sol.success">
+    <!-- 率值 KPI -->
+    <div class="grid3" style="margin:10px 0">
+      <div>
+        <div class="kpi">
+          <span [class]="ratioCls(sol.indicators!.SM, targets?.SM?.min, targets?.SM?.max)">
+            {{ sol.indicators!.SM }}</span>
+          <small> 硅率 SM = SiO₂/(Al₂O₃+Fe₂O₃)</small>
+        </div>
+        <div class="small muted">目标区间
+          [{{ targets?.SM?.min ?? '−∞' }}, {{ targets?.SM?.max ?? '+∞' }}]</div>
+      </div>
+      <div>
+        <div class="kpi">
+          <span [class]="ratioCls(sol.indicators!.IM, targets?.IM?.min, targets?.IM?.max)">
+            {{ sol.indicators!.IM }}</span>
+          <small> 铝率 IM = Al₂O₃/Fe₂O₃</small>
+        </div>
+        <div class="small muted">目标区间
+          [{{ targets?.IM?.min ?? '−∞' }}, {{ targets?.IM?.max ?? '+∞' }}]</div>
+      </div>
+      <div>
+        <div class="kpi">
+          <span [class]="ratioCls(sol.indicators!.KH, targets?.KH?.min, targets?.KH?.max)">
+            {{ sol.indicators!.KH }}</span>
+          <small> 石灰饱和 KH = (CaO−1.65A−0.35F)/(2.8SiO₂)</small>
+        </div>
+        <div class="small muted">目标区间
+          [{{ targets?.KH?.min ?? '−∞' }}, {{ targets?.KH?.max ?? '+∞' }}]</div>
+      </div>
+    </div>
+    <div class="callout warn" *ngFor="let w of sol.indicators?.warnings || []">{{ w }}</div>
+
+    <!-- 配料比例条 -->
+    <h3 style="margin-top:6px">干基配料比例</h3>
+    <app-stack-bar [segs]="shareSegs()"></app-stack-bar>
+
+    <!-- 氧化物来源 -->
+    <h3 style="margin-top:12px">四大氧化物的原料来源（干基，按百分点贡献）</h3>
+    <div *ngFor="let row of oxideSourceSegs()" style="margin-bottom:6px">
+      <div class="row">
+        <strong style="width:56px">{{ row.oxide }}</strong>
+        <div style="flex:1"><app-stack-bar [segs]="row.segs" [showLegend]="false"></app-stack-bar></div>
+        <span class="small mono muted" style="width:90px;text-align:right">
+          合计 {{ row.total.toFixed(2) }}%</span>
+      </div>
+    </div>
+
+    <!-- 合成成分 干/湿 -->
+    <div class="grid2" style="margin-top:10px">
+      <div>
+        <h3>质量守恒合成成分（干基 %）</h3>
+        <table>
+          <tr *ngFor="let e of compositionEntries('dry')">
+            <td>{{ e[0] }}</td><td class="num">{{ e[1].toFixed(3) }}</td>
+          </tr>
+          <tr *ngIf="loi() != null"><td>LOI 烧失量</td><td class="num">{{ loi()!.toFixed(3) }}</td></tr>
+        </table>
+      </div>
+      <div>
+        <h3>湿基折算（%，收到基，含水
+          {{ sol.water_pct_in_wet_mix }}%）</h3>
+        <table>
+          <tr *ngFor="let e of compositionEntries('wet')">
+            <td>{{ e[0] }}</td><td class="num">{{ e[1].toFixed(3) }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+
+    <!-- 物料明细 + 换算留痕 -->
+    <h3 style="margin-top:10px">逐原料质量/水量/成本与化验追溯</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>原料</th><th>化验版/单号</th><th class="num">干基%</th>
+          <th class="num">干料 t</th><th class="num">湿料 t</th>
+          <th class="num">其中水 t</th><th class="num">成本 元</th>
+          <th>干湿基换算过程</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let it of sol.items">
+          <td>{{ it.material_code }} {{ it.material_name }}</td>
+          <td class="small mono">{{ it.assay_version }}<br/>{{ it.lab_report_no }}</td>
+          <td class="num"><strong>{{ it.share_pct_dry }}</strong></td>
+          <td class="num">{{ it.mass_t_dry }}</td>
+          <td class="num">{{ it.mass_t_wet }}</td>
+          <td class="num">{{ it.water_t }}</td>
+          <td class="num">{{ it.cost | number:'1.0-2' }}</td>
+          <td>
+            <details class="trace" (toggle)="openTrace[it.material_code] = !openTrace[it.material_code]">
+              <summary>查看留痕（{{ it.conversion_trace.assay_basis === 'wet' ? '湿→干' : '干基免换算' }}）</summary>
+              <div class="small" style="margin-top:6px">
+                <div>含水率 {{ it.conversion_trace.moisture_pct }}%，
+                  换算系数 <span class="mono">{{ it.conversion_trace.dry_factor }}</span></div>
+                <table style="margin-top:4px">
+                  <thead><tr><th>组分</th><th>输入</th><th>公式</th><th>输出干基</th></tr></thead>
+                  <tbody>
+                    <tr *ngFor="let st of it.conversion_trace.steps">
+                      <td>{{ st.component }}</td>
+                      <td class="num">{{ st.value_in }} ({{ st.basis_in }})</td>
+                      <td class="mono" style="font-size:11px">{{ st.formula }}</td>
+                      <td class="num">{{ st.value_out }} ({{ st.basis_out }})</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div style="margin-top:4px" class="mono" *ngIf="it.conversion_trace.mass_balance as mb">
+                  {{ mb.cost }}
+                </div>
+              </div>
+            </details>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </ng-container>
+</div>
