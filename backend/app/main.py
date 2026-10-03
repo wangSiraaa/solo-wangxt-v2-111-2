@@ -12,13 +12,19 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from . import chemistry, crud, optimizer
-from .database import Base, engine, get_db
+from . import chemistry, crud, models, occupations, optimizer
+from .database import Base, SessionLocal, engine, get_db
 from .schemas import (
     BlendRequest,
     BlendResponse,
+    CapacityResponse,
     EvaluateRequest,
     MaterialOut,
+    OccupationIdRequest,
+    OccupationOut,
+    OccupationPreviewRequest,
+    OccupationPreviewResponse,
+    OccupationReplaceRequest,
     SolutionItem,
     SolutionOut,
 )
@@ -39,14 +45,27 @@ app.add_middleware(
 def blend_error_handler(request, exc: chemistry.BlendError):
     from fastapi.responses import JSONResponse
 
+    status = 422
+    if isinstance(exc, occupations.OccupationError):
+        status = exc.http_status
     return JSONResponse(
-        status_code=422,
+        status_code=status,
         content={
             "error_code": exc.code,
             "message": exc.message,
             "details": exc.details,
         },
     )
+
+
+@app.on_event("startup")
+def _release_expired_on_startup():
+    """服务刷新/重启后：过期占用自动释放（容量回收，来源方案与事件留痕不变）。"""
+    db = SessionLocal()
+    try:
+        occupations.sweep_expired(db)
+    finally:
+        db.close()
 
 
 @app.get("/api/health")
@@ -167,6 +186,112 @@ def run_detail(run_id: int, db: Session = Depends(get_db)):
     if detail is None:
         raise HTTPException(404, "试算记录不存在。")
     return detail
+
+
+# ---- 虚拟批次占用（跨批次湿基可用量防超订） ----
+
+def _missing_assay_event(db, req, exc):
+    """缺测发生在草稿建立之前：仍必须持久化拒绝原因。"""
+    occupations.log_external_rejection(db, "missing_assay_rejected", {
+        "scenario_name": getattr(req, "scenario_name", ""),
+        "mode": getattr(req, "mode", None),
+        "missing": exc.details.get("missing", []),
+    })
+
+
+@app.post("/api/occupations/preview", response_model=OccupationPreviewResponse)
+def occupation_preview(req: OccupationPreviewRequest, db: Session = Depends(get_db)):
+    """试算 + 建草稿（不占量）。
+
+    缺测 → 422 MISSING_ASSAY（落 missing_assay_rejected 事件，无草稿）；
+    无解 → 200 feasible=false（落 infeasible_rejected 事件，无草稿/无占用）；
+    可行 → 200 status=draft，附逐原料“确认后剩余”容量。
+    """
+    try:
+        return occupations.preview(db, req)
+    except chemistry.MissingAssayError as exc:
+        _missing_assay_event(db, req, exc)
+        raise
+    except chemistry.BlendError:
+        raise
+
+
+@app.post("/api/occupations/{occ_id}/confirm", response_model=OccupationOut)
+def occupation_confirm(occ_id: int, req: OccupationIdRequest,
+                       db: Session = Depends(get_db)):
+    occ = occupations.confirm(
+        db, occ_id, req.expected_version,
+        idem=req.idempotency_key, note=req.note,
+    )
+    return occupations.occupation_out(db, occ)
+
+
+@app.post("/api/occupations/{occ_id}/release", response_model=OccupationOut)
+def occupation_release(occ_id: int, req: OccupationIdRequest,
+                       db: Session = Depends(get_db)):
+    occ = occupations.release(
+        db, occ_id, req.expected_version,
+        idem=req.idempotency_key, note=req.note,
+    )
+    return occupations.occupation_out(db, occ)
+
+
+@app.post("/api/occupations/{old_id}/replace")
+def occupation_replace(old_id: int, req: OccupationReplaceRequest,
+                       db: Session = Depends(get_db)):
+    """原子替换：先验证新方案与全部占用成立，再同一事务以新占旧。"""
+    try:
+        old, new = occupations.replace(db, old_id, req)
+    except chemistry.MissingAssayError as exc:
+        old_occ = db.get(models.VirtualBatchOccupation, old_id)
+        occupations.log_external_rejection(
+            db, "missing_assay_rejected",
+            {"scenario_name": req.scenario_name, "mode": req.mode,
+             "missing": exc.details.get("missing", []), "replace_of": old_id},
+            occ=old_occ, occ_code=old_occ.occ_code if old_occ else None,
+        )
+        raise
+    except chemistry.BlendError:
+        raise
+    return {
+        "replaced": occupations.occupation_out(db, old),
+        "occupation": occupations.occupation_out(db, new),
+    }
+
+
+@app.get("/api/occupations/events")
+def occupation_events(occupation_id: int | None = None, limit: int = 200,
+                      db: Session = Depends(get_db)):
+    return occupations.list_events(db, limit=limit, occ_id=occupation_id)
+
+
+@app.get("/api/occupations/{occ_id}/events")
+def occupation_events_of(occ_id: int, limit: int = 200,
+                         db: Session = Depends(get_db)):
+    if db.get(models.VirtualBatchOccupation, occ_id) is None:
+        raise HTTPException(404, "占用记录不存在。")
+    return occupations.list_events(db, limit=limit, occ_id=occ_id)
+
+
+@app.get("/api/occupations/capacity", response_model=CapacityResponse)
+def occupation_capacity(db: Session = Depends(get_db)):
+    """逐原料：湿基可用 / 有效占用 / 剩余 + 构成占用明细；顺带过期清扫。"""
+    return occupations.capacity(db)
+
+
+@app.get("/api/occupations", response_model=list[OccupationOut])
+def occupation_list(status: str | None = None, limit: int = 100,
+                    db: Session = Depends(get_db)):
+    occs = occupations.list_occupations(db, limit=limit, status=status)
+    return [occupations.occupation_out(db, o) for o in occs]
+
+
+@app.get("/api/occupations/{occ_id}", response_model=OccupationOut)
+def occupation_detail(occ_id: int, db: Session = Depends(get_db)):
+    occ = db.get(models.VirtualBatchOccupation, occ_id)
+    if occ is None:
+        raise HTTPException(404, "占用记录不存在。")
+    return occupations.occupation_out(db, occ)
 
 
 # ---- 生产构建后的静态前端（ng build 产物） ----

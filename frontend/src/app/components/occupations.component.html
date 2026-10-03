@@ -1,0 +1,297 @@
+<div class="panel">
+  <div class="row">
+    <h2>③ 虚拟批次占用（跨批次湿基防超订）</h2>
+    <span class="spacer"></span>
+    <button class="ghost" (click)="refreshAll()">刷新容量/过期清扫</button>
+  </div>
+  <p class="small muted" style="margin:4px 0 10px">
+    多个研发批次争用同一批湿基原料：只有「已占用」状态计入湿基可用量；
+    确认/替换经行锁串行化 + 版本号乐观并发，同一请求重试幂等不双扣；
+    失败、缺测、无解绝不留下部分占用，全部原因入事件历史。
+  </p>
+  <div class="callout ok small" *ngIf="sweptNote">🧹 {{ sweptNote }}</div>
+  <div class="callout ok small" *ngIf="info">✅ {{ info }}</div>
+  <div class="callout err small" *ngIf="apiError as err">
+    <strong>{{ err.error_code || 'ERROR' }}</strong>：{{ err.message || err }}
+    <div *ngIf="err.details?.shortages as ss" style="margin-top:6px">
+      <table>
+        <thead><tr><th>原料</th><th class="num">湿基可用 t</th>
+          <th class="num">已占用 t</th><th class="num">剩余 t</th>
+          <th class="num">本次申请 t</th><th class="num">缺口 t</th></tr></thead>
+        <tbody>
+          <tr *ngFor="let s of ss">
+            <td>{{ s.material_code }} {{ s.material_name }}</td>
+            <td class="num">{{ s.availability_t_wet }}</td>
+            <td class="num">{{ s.occupied_t_wet }}</td>
+            <td class="num">{{ s.remaining_t_wet }}</td>
+            <td class="num">{{ s.requested_t_wet }}</td>
+            <td class="num"><strong>{{ s.shortage_t_wet }}</strong></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="small muted" *ngIf="err.details?.recoverable">
+        可恢复：释放/缩小其他占用后用最新版本号重试。</div>
+    </div>
+  </div>
+</div>
+
+<!-- 逐原料容量 -->
+<div class="panel">
+  <h3>逐原料湿基容量：可用 / 已占用 / 剩余</h3>
+  <table>
+    <thead>
+      <tr><th>原料</th><th class="num">湿基可用 t</th>
+        <th class="num">已占用 t</th><th class="num">剩余 t</th>
+        <th style="width:220px">占用程度</th><th>有效占用来源</th></tr>
+    </thead>
+    <tbody>
+      <tr *ngFor="let m of cap?.materials || []">
+        <td>{{ m.material_code }} {{ m.material_name }}</td>
+        <td class="num">{{ m.unlimited ? '不限' : m.availability_t_wet }}</td>
+        <td class="num">{{ m.occupied_t_wet }}</td>
+        <td class="num" [class.err-text]="!m.unlimited && m.remaining_t_wet! <= 0">
+          {{ m.unlimited ? '不限' : m.remaining_t_wet }}</td>
+        <td>
+          <div style="background:#eee;border-radius:4px;height:14px;position:relative">
+            <div *ngIf="!m.unlimited && m.availability_t_wet! > 0"
+                 [style.width.%]="fillPct(m)"
+                 [style.background]="m.occupied_t_wet >= m.availability_t_wet! ? '#b43e3e' : '#155e63'"
+                 style="height:14px;border-radius:4px"></div>
+          </div>
+        </td>
+        <td class="small">
+          <button class="ghost" *ngIf="m.effective_occupations.length"
+                  (click)="expandedMat = expandedMat === m.material_id ? null : m.material_id">
+            {{ m.effective_occupations.length }} 条
+            （{{ expandedMat === m.material_id ? '收起' : '展开' }}）</button>
+          <span class="muted" *ngIf="!m.effective_occupations.length">—</span>
+          <div *ngIf="expandedMat === m.material_id" style="margin-top:4px">
+            <div *ngFor="let o of m.effective_occupations" class="mono">
+              {{ o.occ_code }} · {{ o.scenario_name }} · {{ o.mass_t_wet }} t
+              <button class="ghost" style="padding:0 6px"
+                      (click)="openDetailById(o.occupation_id)">查看</button>
+            </div>
+          </div>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="grid2">
+  <!-- 预览/替换 -->
+  <div class="panel">
+    <h3>{{ replaceTarget ? '原子替换 ' + replaceTarget.occ_code : '占用预览（草稿，不占量）' }}</h3>
+    <div class="small muted" *ngIf="replaceTarget">
+      旧占用当前版本 <strong>{{ replaceTarget.version }}</strong>；
+      新方案与全部占用先验证成立，再在同一事务以新占旧。
+    </div>
+    <div class="small" style="margin:6px 0">
+      <strong>验收场景：</strong>
+      <button class="ghost" *ngFor="let p of presets"
+              [disabled]="!!replaceTarget && p.key !== 'SMALL'"
+              (click)="applyPreset(p.key)"
+              [style.outline]="presetKey === p.key ? '1px solid var(--brand)' : ''">
+        {{ p.label }}</button>
+      <div class="muted">{{ presetDesc() }}</div>
+    </div>
+    <table>
+      <tr><td>场景名</td><td><input [(ngModel)]="scenario"></td></tr>
+      <tr><td>批量（t 干生料）</td><td><input type="number" [(ngModel)]="batch"></td></tr>
+      <tr><td>占用有效期 TTL（秒）</td><td><input type="number" [(ngModel)]="ttl"></td></tr>
+      <tr><td>候选</td><td class="small muted">LS01 石灰石 + SS01 砂岩 + IR01 铁粉（宽率值窗口）</td></tr>
+      <tr><td>幂等键（可选）</td><td><input [(ngModel)]="idemKey" placeholder="同一请求重试不双扣"></td></tr>
+    </table>
+    <div class="row" style="margin-top:8px">
+      <button (click)="previewPlan()" [disabled]="busy">① 试算预览</button>
+      <button class="ghost" *ngIf="replaceTarget" (click)="cancelReplace()">取消替换</button>
+    </div>
+
+    <div *ngIf="preview?.feasible" style="margin-top:10px">
+      <div class="callout ok small">
+        草稿 {{ preview!.occ_code }} · 版本 {{ preview!.version }} ·
+        成本 {{ preview!.total_cost }} 元。确认后才占用湿料。
+      </div>
+      <table>
+        <thead><tr><th>原料</th><th class="num">干基%</th>
+          <th class="num">湿料 t</th><th class="num">现有占用</th>
+          <th class="num">确认后剩余</th></tr></thead>
+        <tbody>
+          <tr *ngFor="let row of preview!.capacity">
+            <td>{{ row.material_code }}</td>
+            <td class="num">—</td>
+            <td class="num">{{ row.requested_t_wet }}</td>
+            <td class="num">{{ row.occupied_t_wet }}</td>
+            <td class="num" [class.err-text]="!row.would_fit">
+              {{ row.unlimited ? '不限' : row.remaining_t_wet }}
+              <span class="badge err" *ngIf="!row.would_fit">会超订</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="row" style="margin-top:8px">
+        <button *ngIf="!replaceTarget"
+                (click)="confirmPreview()" [disabled]="busy">
+          ② 确认占用（v{{ preview!.version }}）</button>
+        <button *ngIf="replaceTarget" (click)="doReplace()" [disabled]="busy">
+          ② 原子替换旧占用（旧 v{{ replaceTarget.version }} → 新）
+        </button>
+      </div>
+    </div>
+
+    <div *ngIf="preview && !preview.feasible" class="callout err small" style="margin-top:10px">
+      <strong>{{ preview.diagnostic?.reason }}</strong>
+      <div>{{ preview.diagnostic?.message }}</div>
+      <table *ngIf="preview.diagnostic?.conflicts?.length" style="margin-top:6px">
+        <thead><tr><th>冲突约束</th><th class="num">限值</th>
+          <th class="num">达到值</th><th class="num">缺口</th></tr></thead>
+        <tbody>
+          <tr *ngFor="let cf of preview.diagnostic.conflicts">
+            <td>{{ cf.constraint }}</td><td class="num">{{ cf.limit == null ? '—' : cf.limit }}</td>
+            <td class="num">{{ cf.achieved == null ? '—' : cf.achieved }}</td>
+            <td class="num">{{ cf.normalized_gap }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 占用列表 -->
+  <div class="panel">
+    <h3>占用方案（草稿 / 已占用 / 已释放 / 已过期）</h3>
+    <table>
+      <thead><tr><th>占用号</th><th>场景</th><th>状态</th><th class="num">v</th>
+        <th class="num">湿料合计 t</th><th>到期/释放</th><th></th></tr></thead>
+      <tbody>
+        <tr *ngFor="let o of occs"
+            [style.background]="detail?.id === o.id ? 'var(--brand-soft)' : ''"
+            [style.opacity]="(o.status === 'released' || o.status === 'expired') ? 0.7 : 1">
+          <td class="mono small">{{ o.occ_code }}</td>
+          <td>{{ o.scenario_name }}</td>
+          <td><span [class]="statusCls(o.status)">{{ statusLabel(o.status) }}</span></td>
+          <td class="num">{{ o.version }}</td>
+          <td class="num">{{ totalWet(o) | number:'1.0-2' }}</td>
+          <td class="small muted">
+            <span *ngIf="o.expires_at">到期 {{ o.expires_at.slice(0,19) }}<br></span>
+            <span *ngIf="o.released_at">释放 {{ o.released_at.slice(0,19) }}</span>
+          </td>
+          <td>
+            <button class="ghost" (click)="openDetail(o)">追溯</button>
+            <button class="ghost" *ngIf="o.status === 'draft'"
+                    (click)="confirmById(o)">确认</button>
+            <button class="ghost" *ngIf="o.status === 'draft' || o.status === 'occupied'"
+                    (click)="release(o)">释放</button>
+            <button class="ghost" *ngIf="o.status === 'occupied'"
+                    (click)="startReplace(o)">替换</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="small muted" *ngIf="!occs.length">尚无占用记录。</p>
+  </div>
+</div>
+
+<!-- 占用详情：逐原料快照 + 干湿基换算 + 事件 -->
+<div class="panel" *ngIf="detail">
+  <div class="row">
+    <h3>占用追溯 {{ detail.occ_code }}
+      <span [class]="statusCls(detail.status)">{{ statusLabel(detail.status) }}</span>
+      <span class="mono small muted" *ngIf="detail.run_id">
+        · 来源试算 RUN id={{ detail.run_id }}（可在④历史追溯回看完整方案）</span>
+    </h3>
+    <span class="spacer"></span>
+    <button class="ghost" (click)="detail = null">关闭</button>
+  </div>
+  <div class="small muted" *ngIf="detail.replace_reason">{{ detail.replace_reason }}</div>
+  <table style="margin-top:8px">
+    <thead>
+      <tr><th>原料</th><th>化验版/单号</th><th class="num">含水率%</th>
+        <th class="num">干基%</th><th class="num">干料 t</th><th class="num">湿料 t</th>
+        <th class="num">水 t</th><th class="num">成本</th>
+        <th class="num">可用量快照</th><th class="num">占用前已占</th>
+        <th class="num">占用后剩余</th><th>换算</th></tr>
+    </thead>
+    <tbody>
+      <tr *ngFor="let it of detail.items; let k = index">
+        <td>{{ it.material_code }} {{ it.material_name }}</td>
+        <td class="small mono">{{ it.assay_version }}<br>{{ it.lab_report_no }}</td>
+        <td class="num">{{ it.moisture_pct }}</td>
+        <td class="num">{{ it.share_pct_dry }}</td>
+        <td class="num">{{ it.mass_t_dry }}</td>
+        <td class="num"><strong>{{ it.mass_t_wet }}</strong></td>
+        <td class="num">{{ it.water_t }}</td>
+        <td class="num">{{ it.cost }}</td>
+        <td class="num">{{ dash(it.available_t_wet_snapshot) }}</td>
+        <td class="num">{{ dash(it.occupied_before_t_wet) }}</td>
+        <td class="num">{{ dash(it.remaining_after_t_wet_snapshot) }}</td>
+        <td>
+          <details>
+            <summary>留痕（{{ it.conversion_trace.assay_basis === 'wet' ? '湿→干' : '干基' }}）</summary>
+            <div class="small">
+              换算系数 {{ it.dry_factor }}
+              <table>
+                <thead><tr><th>组分</th><th>输入</th><th>公式</th><th>干基</th></tr></thead>
+                <tbody>
+                  <tr *ngFor="let st of it.conversion_trace.steps">
+                    <td>{{ st.component }}</td>
+                    <td class="num">{{ st.value_in }}({{ st.basis_in }})</td>
+                    <td class="mono" style="font-size:11px">{{ st.formula }}</td>
+                    <td class="num">{{ st.value_out }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- 事件历史 -->
+<div class="panel">
+  <h3>占用事件历史（确认 / 拒绝 / 释放 / 过期 / 替换，含原因与版本）</h3>
+  <table>
+    <thead><tr><th>时间</th><th>占用</th><th>事件</th><th>原因/明细</th>
+        <th>幂等键</th></tr></thead>
+    <tbody>
+      <tr *ngFor="let e of events">
+        <td class="small muted">{{ e.created_at }}</td>
+        <td class="small mono">{{ e.occ_code || '—' }}</td>
+        <td><span [class]="eventCls(e.event_type)">{{ eventLabel(e.event_type) }}</span></td>
+        <td class="small">
+          <ng-container [ngSwitch]="e.detail?.reason || e.event_type">
+            <span *ngSwitchCase="'CAPACITY_CONFLICT'">
+              <span *ngFor="let s of e.detail?.shortages || []">
+                {{ s.material_code }} 缺口 {{ s.shortage_t_wet }} t（湿基）；
+              </span>
+            </span>
+            <span *ngSwitchCase="'VERSION_CONFLICT'">
+              版本冲突：期望 {{ e.detail?.expected_version }} / 当前
+              {{ e.detail?.current_version }}（可恢复）
+            </span>
+            <span *ngSwitchCase="'SOLUTION_INFEASIBLE'">新方案无解，替换拒绝，旧占用不变</span>
+            <span *ngSwitchCase="'expired'">TTL 到期自动释放（容量回收，追溯不变）</span>
+            <span *ngSwitchDefault>{{ e.detail?.note || e.detail?.replaced_by
+              || (e.detail?.missing?.length
+                  ? '缺测 ' + e.detail.missing.length + ' 项（未按零处理，不占量）'
+                  : '') }}
+              <span *ngIf="e.event_type === 'infeasible_rejected'">无解方案，未建草稿，不占量</span>
+              <span *ngIf="e.event_type === 'created'">草稿创建</span>
+              <span *ngIf="e.event_type === 'confirmed'">确认占用
+                <ng-container *ngIf="e.detail?.expires_at">，到期 {{ e.detail.expires_at }}</ng-container>
+              </span>
+              <span *ngIf="e.event_type === 'released'">
+                {{ e.detail?.from_status === 'draft' ? '撤销草稿' : '人工释放' }}
+              </span>
+              <span *ngIf="e.event_type === 'replaced'">
+                由 {{ e.detail?.replaced_by }} 原子替换
+              </span>
+            </span>
+          </ng-container>
+        </td>
+        <td class="small mono">{{ e.idempotency_key || '—' }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>

@@ -114,3 +114,120 @@ export interface RunDetail {
   status: string; created_at: string;
   solutions: any[];
 }
+
+// ---- 虚拟批次占用 ----
+
+export interface OccupationPreviewRequest {
+  scenario_name: string;
+  batch_t_dry: number;
+  candidates: { material_id: number; assay_version_id?: number | null }[];
+  targets: Targets;
+  hazard_limits_pct: Record<string, number>;
+  mode: string;
+  cheap_material_id?: number | null;
+  ttl_seconds: number;
+  idempotency_key?: string | null;
+}
+
+export interface OccupationItem {
+  material_id: number;
+  material_code: string;
+  material_name: string;
+  assay_version_id: number;
+  assay_version: string;
+  lab_report_no: string;
+  moisture_pct: number;
+  dry_factor: number;
+  share_pct_dry: number;
+  mass_t_dry: number;
+  mass_t_wet: number;
+  water_t: number;
+  cost: number;
+  conversion_trace: any;
+  available_t_wet_snapshot: number | null;
+  occupied_before_t_wet: number | null;
+  remaining_after_t_wet_snapshot: number | null;
+}
+
+export interface CapacityContributor {
+  occupation_id: number;
+  occ_code?: string;
+  scenario_name?: string;
+  mass_t_wet: number;
+  occupied_at?: string | null;
+  expires_at?: string | null;
+}
+
+export interface CapacityRow {
+  material_id: number;
+  material_code: string;
+  material_name: string;
+  availability_t_wet: number | null;
+  occupied_t_wet: number;
+  requested_t_wet?: number;
+  remaining_t_wet: number | null;
+  unlimited: boolean;
+  would_fit?: boolean;
+  effective_occupations: CapacityContributor[];
+}
+
+export interface CapacityResponse {
+  swept_expired: number;
+  materials: CapacityRow[];
+}
+
+export interface OccupationEvent {
+  id: number;
+  occupation_id: number | null;
+  occ_code: string | null;
+  event_type: string;
+  created_at: string;
+  idempotency_key: string | null;
+  detail: any;
+}
+
+export interface Occupation {
+  id: number;
+  occ_code: string;
+  scenario_name: string;
+  status: 'draft' | 'occupied' | 'released' | 'expired' | string;
+  version: number;
+  batch_t_dry: number;
+  mode: string;
+  total_cost: number | null;
+  run_id: number | null;
+  solution_id: number | null;
+  occupied_at: string | null;
+  expires_at: string | null;
+  released_at: string | null;
+  replace_reason: string | null;
+  created_at: string;
+  items: OccupationItem[];
+  events: OccupationEvent[];
+}
+
+export interface OccupationPreviewResponse {
+  occupation_id: number | null;
+  occ_code: string | null;
+  status: string;
+  feasible: boolean;
+  mode: string;
+  total_cost: number | null;
+  items: OccupationItem[];
+  capacity: CapacityRow[];
+  indicators: any;
+  diagnostic?: any;
+  ttl_seconds: number | null;
+  version?: number | null;
+}
+
+export interface OccupationActionRequest {
+  expected_version: number;
+  idempotency_key?: string | null;
+  note?: string | null;
+}
+
+export interface OccupationReplaceRequest extends OccupationPreviewRequest {
+  expected_version: number;
+  replace_note?: string | null;
+}

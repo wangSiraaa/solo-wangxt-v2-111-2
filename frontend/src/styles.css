@@ -74,6 +74,7 @@ th, td {
 }
 th { background: #f0f3f5; font-weight: 600; white-space: nowrap; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.err-text { color: var(--err); font-weight: 600; }
 
 input[type="number"], input[type="text"], select {
   padding: 4px 8px;

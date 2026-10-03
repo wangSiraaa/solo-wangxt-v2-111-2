@@ -44,7 +44,8 @@ def rows_from_candidates(db: Session, candidates) -> list[Row]:
     return prepare_rows(resolve_candidates(db, candidates))
 
 
-def save_run(db: Session, req, solutions: list[dict], scenario_name: str | None = None):
+def save_run(db: Session, req, solutions: list[dict], scenario_name: str | None = None,
+             commit: bool = True):
     run = models.BlendRun(
         run_code=f"RUN-{uuid.uuid4().hex[:10].upper()}",
         scenario_name=scenario_name or getattr(req, "scenario_name", "试算"),
@@ -91,8 +92,11 @@ def save_run(db: Session, req, solutions: list[dict], scenario_name: str | None 
                 conversion_trace=it["conversion_trace"],
                 assay_composition_snapshot=it["conversion_trace"]["steps"],
             ))
-    db.commit()
-    db.refresh(run)
+    if commit:
+        db.commit()
+        db.refresh(run)
+    else:
+        db.flush()
     return run
 
 
