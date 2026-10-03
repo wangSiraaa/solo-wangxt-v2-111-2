@@ -2,7 +2,9 @@ import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import {
-  BlendRequest, BlendResponse, Material, RunDetail, RunSummary,
+  BlendRequest, BlendResponse, CapacityResponse, Material, Occupation,
+  OccupationConfirmResponse, OccupationEvent, OccupationPreview,
+  OccupationSpec, RunDetail, RunSummary,
 } from '../models/models';
 
 @Injectable({ providedIn: 'root' })
@@ -34,5 +36,47 @@ export class ApiService {
 
   run(id: number): Observable<RunDetail> {
     return this.http.get<RunDetail>(`${this.base}/runs/${id}`);
+  }
+
+  // ---------- 虚拟批次占用 ----------
+
+  capacity(): Observable<CapacityResponse> {
+    return this.http.get<CapacityResponse>(`${this.base}/capacity`);
+  }
+
+  previewOccupation(spec: OccupationSpec, replaceId: number | null,
+                    expectedVersions: Record<string, number>):
+      Observable<OccupationPreview> {
+    return this.http.post<OccupationPreview>(
+      `${this.base}/occupations/preview`,
+      { spec, replace_occupation_id: replaceId, expected_versions: expectedVersions });
+  }
+
+  confirmOccupation(body: {
+    spec: OccupationSpec; replace_occupation_id: number | null;
+    expected_versions: Record<string, number>;
+    idempotency_key: string; ttl_minutes: number;
+  }): Observable<OccupationConfirmResponse> {
+    return this.http.post<OccupationConfirmResponse>(
+      `${this.base}/occupations/confirm`, body);
+  }
+
+  releaseOccupation(id: number, expectedVersions: Record<string, number> = {}):
+      Observable<OccupationConfirmResponse> {
+    return this.http.post<OccupationConfirmResponse>(
+      `${this.base}/occupations/${id}/release`, { expected_versions: expectedVersions });
+  }
+
+  occupations(status?: string): Observable<Occupation[]> {
+    const params: Record<string, string> = status ? { status } : {};
+    return this.http.get<Occupation[]>(`${this.base}/occupations`, { params });
+  }
+
+  occupation(id: number): Observable<Occupation> {
+    return this.http.get<Occupation>(`${this.base}/occupations/${id}`);
+  }
+
+  occupationEvents(): Observable<OccupationEvent[]> {
+    return this.http.get<OccupationEvent[]>(`${this.base}/occupation-events`);
   }
 }

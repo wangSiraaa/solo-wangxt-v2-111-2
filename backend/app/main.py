@@ -1,34 +1,56 @@
-"""FastAPI 入口：原料/化验查询、配比试算、手工评估、历史追溯。
+"""FastAPI 入口：原料/化验查询、配比试算、手工评估、历史追溯、虚拟批次占用。
 
 注意：本服务为离线工艺研发试算工具，采用虚构工艺边界与演示数据，
 不向任何真实生产设备下发指令。
 """
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import numpy as np
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from . import chemistry, crud, optimizer
-from .database import Base, engine, get_db
+from . import chemistry, crud, occupations, optimizer
+from .database import Base, SessionLocal, engine, get_db
 from .schemas import (
     BlendRequest,
     BlendResponse,
+    CapacityOut,
     EvaluateRequest,
     MaterialOut,
+    OccupationConfirmRequest,
+    OccupationConfirmResponse,
+    OccupationOut,
+    OccupationPreviewRequest,
+    OccupationPreviewResponse,
+    OccupationReleaseRequest,
     SolutionItem,
     SolutionOut,
 )
 
-Base.metadata.create_all(bind=engine)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动即释放重启前已过期的占用，并启动周期扫描线程
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        occupations.sweep_expired(db)
+    finally:
+        db.close()
+    occupations.start_reaper(SessionLocal)
+    yield
+
 
 app = FastAPI(
     title="离线原料配比试算（虚构工艺边界 · 研发用）",
-    version="1.0.0",
-    description="质量守恒合成 + 率值计算 + SciPy LP 优化；不连接任何生产控制系统。",
+    version="1.1.0",
+    description="质量守恒合成 + 率值计算 + SciPy LP 优化 + 跨批次湿基容量占用；"
+                "不连接任何生产控制系统。",
+    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
@@ -37,10 +59,9 @@ app.add_middleware(
 
 @app.exception_handler(chemistry.BlendError)
 def blend_error_handler(request, exc: chemistry.BlendError):
-    from fastapi.responses import JSONResponse
-
+    status = getattr(exc, "status_code", 422)
     return JSONResponse(
-        status_code=422,
+        status_code=status,
         content={
             "error_code": exc.code,
             "message": exc.message,
@@ -167,6 +188,121 @@ def run_detail(run_id: int, db: Session = Depends(get_db)):
     if detail is None:
         raise HTTPException(404, "试算记录不存在。")
     return detail
+
+
+# ---------------------------------------------------------------------------
+# 虚拟批次占用：预览 / 确认 / 释放 / 容量查询 / 占用与事件历史
+# ---------------------------------------------------------------------------
+
+def _serialize_occupation_item(it: dict) -> dict:
+    # 预览快照里可用量字段名为 *_snapshot；已持久化的序列化结果已是 availability_t_wet
+    payload = dict(it)
+    if "availability_t_wet" not in payload:
+        payload["availability_t_wet"] = payload.get("availability_t_wet_snapshot")
+    from .schemas import OccupationItemOut
+    return OccupationItemOut(**{
+        k: v for k, v in payload.items()
+        if k in OccupationItemOut.model_fields
+    }).model_dump(mode="json")
+
+
+def _occupation_out(occ: dict) -> OccupationOut:
+    return OccupationOut(**occ)
+
+
+@app.post("/api/occupations/preview", response_model=OccupationPreviewResponse)
+def occupation_preview(req: OccupationPreviewRequest,
+                       db: Session = Depends(get_db)):
+    """预览：按当前有效占用求可行方案并核对容量，不落库、不占量。"""
+    result = occupations.preview(
+        db, req.spec,
+        replace_id=req.replace_occupation_id,
+        expected_versions=req.expected_versions,
+    )
+    return OccupationPreviewResponse(
+        feasible=True,
+        fits=result["fits"],
+        replace_occupation_id=result["replace_occupation_id"],
+        solution=_serialize_solution(result["solution"]),
+        items=[_serialize_occupation_item(s) for s in result["items"]],
+        gaps=result["gaps"],
+        current_versions=result["current_versions"],
+        diagnostic=None,
+        message=result["message"],
+    )
+
+
+@app.post("/api/occupations/confirm", response_model=OccupationConfirmResponse)
+def occupation_confirm(req: OccupationConfirmRequest,
+                       db: Session = Depends(get_db)):
+    """确认占用（原子；幂等；支持原子替换与乐观版本检查）。"""
+    occ, replay = occupations.confirm(
+        db, req.spec,
+        idempotency_key=req.idempotency_key,
+        replace_id=req.replace_occupation_id,
+        expected_versions=req.expected_versions,
+        ttl_minutes=req.ttl_minutes,
+    )
+    versions = {it["material_code"]: it["ledger_version"]
+                for it in occ["items"]}
+    return OccupationConfirmResponse(
+        occupation=_occupation_out(occ),
+        replay=replay,
+        replaced_occupation_id=req.replace_occupation_id,
+        versions=versions,
+    )
+
+
+@app.post("/api/occupations/{occupation_id}/release",
+          response_model=OccupationConfirmResponse)
+def occupation_release(occupation_id: int,
+                       req: OccupationReleaseRequest | None = None,
+                       db: Session = Depends(get_db)):
+    req = req or OccupationReleaseRequest()
+    result = occupations.release(
+        db, occupation_id, expected_versions=req.expected_versions
+    )
+    occ = result["occupation"]
+    versions = {it["material_code"]: it["ledger_version"]
+                for it in occ["items"]}
+    return OccupationConfirmResponse(
+        occupation=_occupation_out(occ),
+        replay=result["replay"],
+        replaced_occupation_id=None,
+        versions=versions,
+    )
+
+
+@app.get("/api/capacity", response_model=CapacityOut)
+def capacity(db: Session = Depends(get_db)):
+    """容量查询：先扫过期占用，再返回每种原料可用/占用/剩余与账本版本。"""
+    expired = occupations.sweep_expired(db)
+    cap = occupations.capacity_map(db)
+    return CapacityOut(
+        as_of=occupations.utcnow(),
+        expired_released=expired,
+        materials=list(cap.values()),
+    )
+
+
+@app.get("/api/occupations")
+def occupation_list(status: str | None = None, limit: int = 100,
+                    db: Session = Depends(get_db)):
+    occupations.sweep_expired(db)
+    return occupations.list_occupations(db, status=status, limit=limit)
+
+
+@app.get("/api/occupations/{occupation_id}", response_model=OccupationOut)
+def occupation_detail(occupation_id: int, db: Session = Depends(get_db)):
+    occ = occupations.get_occupation(db, occupation_id)
+    if occ is None:
+        raise HTTPException(404, "占用记录不存在。")
+    return _occupation_out(occ)
+
+
+@app.get("/api/occupation-events")
+def occupation_events(limit: int = 200, db: Session = Depends(get_db)):
+    return occupations.list_events(db, limit=limit)
 
 
 # ---- 生产构建后的静态前端（ng build 产物） ----

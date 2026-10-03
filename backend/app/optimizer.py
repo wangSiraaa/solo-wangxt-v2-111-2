@@ -93,9 +93,14 @@ def _build_constraints(rows: list[Row], req) -> tuple[list, list, list[dict]]:
     """构造 A_ub x ≤ b_ub（含上下界/率值/有害组分/可用量）。
 
     返回 A, b, meta；meta 每项带 kind/label/limit，供冲突诊断换算物理量。
+
+    availability_override_t_wet：跨批次虚拟占用后的“湿基剩余可用量”
+    （material_id -> 剩余湿基吨）。存在时覆盖原料档案的单次可用量上限，
+    使新方案在求解阶段就无法超订其它研发批次已占用的容量。
     """
     n = len(rows)
     A, b, meta = [], [], []
+    override = getattr(req, "availability_override_t_wet", None) or {}
 
     def add(coefs, rhs, kind, label, limit=None):
         A.append([float(v) for v in coefs])
@@ -137,14 +142,23 @@ def _build_constraints(rows: list[Row], req) -> tuple[list, list, list[dict]]:
             "hazard_" + key, f"有害组分上限 {key}≤{limit}%(干基)", float(limit))
 
     # --- 可用量（湿基）：B*x/(1-m) ≤ avail → x ≤ avail*(1-m)/B ---
+    # 若给出跨批次占用后的剩余湿基量，则以剩余量替代档案可用量。
     B = req.batch_t_dry
     for i, r in enumerate(rows):
-        if r.availability_t_wet is not None:
-            ub = r.availability_t_wet * (1.0 - r.moisture_pct / 100.0) / B
-            e = np.zeros(n)
-            e[i] = 1.0
-            add(e, ub, "avail",
-                f"{r.name} 可用量≤{r.availability_t_wet:g}t(湿基)", ub)
+        if r.material_id in override:
+            avail_wet = override[r.material_id]
+            if avail_wet is None or not np.isfinite(avail_wet):
+                continue  # 显式取消可用量约束（用于容量缺口诊断重算）
+            label = (f"{r.name} 占用后剩余≤{avail_wet:g}t(湿基)")
+        elif r.availability_t_wet is not None:
+            avail_wet = r.availability_t_wet
+            label = f"{r.name} 可用量≤{r.availability_t_wet:g}t(湿基)"
+        else:
+            continue
+        ub = avail_wet * (1.0 - r.moisture_pct / 100.0) / B
+        e = np.zeros(n)
+        e[i] = 1.0
+        add(e, ub, "avail", label, ub)
 
     return A, b, meta
 

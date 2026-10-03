@@ -114,3 +114,121 @@ export interface RunDetail {
   status: string; created_at: string;
   solutions: any[];
 }
+
+// ---------------- 虚拟批次占用 ----------------
+
+export interface OccupationSpec {
+  scenario_name: string;
+  batch_t_dry: number;
+  candidates: { material_id: number; assay_version_id?: number | null }[];
+  targets: Targets;
+  hazard_limits_pct?: Record<string, number>;
+  mode: string;
+  cheap_material_id?: number | null;
+  source_run_id?: number | null;
+  source_solution_id?: number | null;
+}
+
+export interface CapacityGap {
+  material_id: number;
+  material_code: string;
+  material_name: string;
+  availability_t_wet: number | null;
+  already_occupied_t_wet: number;
+  remaining_t_wet: number | null;
+  requested_t_wet: number;
+  gap_t_wet: number;
+}
+
+export interface OccupationItem {
+  material_id: number;
+  material_code: string;
+  material_name: string;
+  assay_version: string;
+  lab_report_no: string;
+  share_pct_dry: number;
+  mass_t_dry: number;
+  mass_t_wet: number;
+  water_t: number;
+  moisture_pct: number;
+  cost: number;
+  availability_t_wet: number | null;
+  already_occupied_t_wet: number;
+  requested_t_wet: number;
+  remaining_t_wet_after: number | null;
+  ledger_version: number;
+  conversion_trace: any;
+}
+
+export interface OccupationEvent {
+  id: number;
+  occupation_id: number | null;
+  event_type: string;
+  event_reason: string | null;
+  idempotency_key: string | null;
+  detail: any;
+  created_at: string;
+}
+
+export interface Occupation {
+  id: number;
+  occupation_code: string;
+  scenario_name: string;
+  batch_t_dry: number;
+  mode: string;
+  status: 'occupied' | 'released' | 'expired' | string;
+  source_kind: string;
+  source_run_id: number | null;
+  source_solution_id: number | null;
+  replaces_occupation_id: number | null;
+  total_cost: number | null;
+  created_at: string;
+  expires_at: string;
+  released_at: string | null;
+  items: OccupationItem[];
+  events: OccupationEvent[];
+  solution?: any;
+}
+
+export interface MaterialCapacity {
+  material_id: number;
+  material_code: string;
+  material_name: string;
+  moisture_pct: number;
+  availability_t_wet: number | null;
+  occupied_t_wet: number;
+  remaining_t_wet: number | null;
+  ledger_version: number;
+  active_occupation_ids: number[];
+  active_items: {
+    occupation_id: number;
+    mass_t_wet: number;
+    share_pct_dry: number;
+    occupation_code: string;
+  }[];
+}
+
+export interface CapacityResponse {
+  as_of: string;
+  expired_released: number[];
+  materials: MaterialCapacity[];
+}
+
+export interface OccupationPreview {
+  feasible: boolean;
+  fits: boolean;
+  replace_occupation_id: number | null;
+  solution: Solution | null;
+  items: OccupationItem[];
+  gaps: CapacityGap[];
+  current_versions: Record<string, number>;
+  diagnostic?: any;
+  message?: string | null;
+}
+
+export interface OccupationConfirmResponse {
+  occupation: Occupation;
+  replay: boolean;
+  replaced_occupation_id: number | null;
+  versions: Record<string, number>;
+}

@@ -116,6 +116,30 @@ MATERIALS = [
                        composition={"CaO": 0.05, "SiO2": 99.6, "Al2O3": 0.35,
                                     "Fe2O3": 0.0, "LOI": 0.0},
                        measured_oxides=["CaO", "SiO2", "Al2O3", "Fe2O3", "LOI"])]),
+    # ---- 虚拟批次占用验收专用（is_active=False，不进入常规候选） ----
+    # 两种料成分与率值窗口刻意设为“几乎任意配比可行”，
+    # 便于按湿基可用量精确构造 800/300 超订与替换场景。
+    dict(
+        code="VK01", name="占用验收料1(虚构·容量800)", category="演示用",
+        moisture_pct=0.0, cost_per_t_wet=50.0, availability_t_wet=800.0,
+        min_share_pct=100.0, is_active=False,
+        note="虚拟批次占用验收：湿基可用量 800t，单料方案湿料量恰等于批量；"
+             "甲占 800t 即占满，乙申请 300t 缺口恰为 300t；甲换成 500t 后余 300t，乙成立。",
+        versions=[dict(version="V2026-09", lab_report_no="LAB-OCC-VK1",
+                       assayed_at=datetime(2026, 9, 2), basis="dry",
+                       composition={"CaO": 45.0, "SiO2": 12.0, "Al2O3": 4.0,
+                                    "Fe2O3": 2.0, "LOI": 37.0},
+                       measured_oxides=["CaO", "SiO2", "Al2O3", "Fe2O3", "LOI"])]),
+    dict(
+        code="VK02", name="占用验收料2(虚构·容量2000)", category="演示用",
+        moisture_pct=0.0, cost_per_t_wet=40.0, availability_t_wet=2000.0,
+        min_share_pct=0.0, is_active=False,
+        note="虚拟批次占用验收：配配料，不设掺量下限。",
+        versions=[dict(version="V2026-09", lab_report_no="LAB-OCC-VK2",
+                       assayed_at=datetime(2026, 9, 2), basis="dry",
+                       composition={"CaO": 40.0, "SiO2": 20.0, "Al2O3": 8.0,
+                                    "Fe2O3": 4.0, "LOI": 28.0},
+                       measured_oxides=["CaO", "SiO2", "Al2O3", "Fe2O3", "LOI"])]),
 ]
 
 
